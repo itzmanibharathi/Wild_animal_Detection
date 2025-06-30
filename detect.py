@@ -7,7 +7,6 @@ import os
 import requests
 from twilio.rest import Client
 import telebot
-import json
 from datetime import datetime
 
 # === Telegram Bot Setup ===
@@ -39,7 +38,7 @@ is_alerting = False
 stop_thread = False
 last_detection_time = None
 sound_thread = None
-detected_labels = set()  # To keep track of already detected labels
+detected_labels = set()
 
 # === CAMERA ===
 cap = cv2.VideoCapture(0)
@@ -69,21 +68,16 @@ def send_telegram_alert(label, image_path):
 
 # === Django Upload Function ===
 def upload_to_django(img_path, label):
-    url = "http://192.168.218.171:8000/api/upload/"  # Django API endpoint for uploading detection
+    url = "http://192.168.218.171:8000/api/upload/"
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
     try:
-        # Open image file
         with open(img_path, "rb") as img_file:
-            files = {"image": img_file}  # Image file to be uploaded
+            files = {"image": img_file}
             data = {
-                "label": label,  # Animal label
-                "timestamp": timestamp  # Timestamp for when the image was captured
+                "label": label,
+                "timestamp": timestamp
             }
-
-            # Send POST request to Django API
             response = requests.post(url, files=files, data=data)
-
             if response.status_code == 201:
                 print(f"[✓] Detection uploaded to Django: {label} at {timestamp}")
             else:
@@ -116,7 +110,6 @@ def trigger_alert(frame, label):
     is_alerting = True
     last_detection_time = datetime.now()
 
-    # Upload to Django
     upload_to_django(img_path, label)
 
 # === MAIN LOOP ===
@@ -140,47 +133,57 @@ try:
 
         # === 2. ELEPHANT ===
         result = model_elephant(frame, verbose=False)
-        if result[0].boxes and "Elephant" not in detected_labels:
-            print("[ALERT] Elephant Detected")
-            trigger_alert(frame, "Elephant")
-            detected_labels.add("Elephant")
-            continue
+        if result[0].boxes:
+            conf = result[0].boxes.conf
+            if conf is not None and conf.max() > 0.75 and "Elephant" not in detected_labels:
+                print("[ALERT] Elephant Detected")
+                trigger_alert(frame, "Elephant")
+                detected_labels.add("Elephant")
+                continue
 
         # === 3. PIG ===
         result = model_pig(frame, verbose=False)
-        if result[0].boxes and "Pig" not in detected_labels:
-            print("[ALERT] Pig Detected")
-            trigger_alert(frame, "Pig")
-            detected_labels.add("Pig")
-            continue
+        if result[0].boxes:
+            conf = result[0].boxes.conf
+            if conf is not None and conf.max() > 0.75 and "Pig" not in detected_labels:
+                print("[ALERT] Pig Detected")
+                trigger_alert(frame, "Pig")
+                detected_labels.add("Pig")
+                continue
 
         # === 4. RAT ===
         result = model_rat(frame, verbose=False)
-        if result[0].boxes and "Rat" not in detected_labels:
-            print("[ALERT] Rat Detected")
-            trigger_alert(frame, "Rat")
-            detected_labels.add("Rat")
-            continue
+        if result[0].boxes:
+            conf = result[0].boxes.conf
+            if conf is not None and conf.max() > 0.75 and "Rat" not in detected_labels:
+                print("[ALERT] Rat Detected")
+                trigger_alert(frame, "Rat")
+                detected_labels.add("Rat")
+                continue
 
-        # === 5. MOUSE (Handle Mouse detection) ===
+        # === 5. MOUSE / DOG / OTHER ===
         result = model_other_animals(frame, verbose=False)
         if result[0].boxes:
             cls_id = int(result[0].boxes.cls[0])
-            name = result[0].names[cls_id].lower()
-            if name == "mouse" and "Mouse" not in detected_labels:
-                print("[ALERT] Mouse Detected")
-                trigger_alert(frame, "Mouse")
-                detected_labels.add("Mouse")
-                continue
-            elif name == "dog" and "Dog" not in detected_labels:
-                print("[ALERT] Dog Detected")
-                trigger_alert(frame, "Dog")
-                detected_labels.add("Dog")
-                continue
+            name = result[0].names[cls_id].capitalize()
+            conf = result[0].boxes.conf[0]
+            if conf > 0.75:
+                if name == "Mouse" and "Mouse" not in detected_labels:
+                    print("[ALERT] Mouse Detected")
+                    trigger_alert(frame, "Mouse")
+                    detected_labels.add("Mouse")
+                    continue
+                elif name == "Dog" and "Dog" not in detected_labels:
+                    print("[ALERT] Dog Detected")
+                    trigger_alert(frame, "Dog")
+                    detected_labels.add("Dog")
+                    continue
+                else:
+                    print(f"[INFO] Detected {name} with high confidence, not in threat list.")
             else:
-                print(f"[INFO] Detected {name}, not in threat list.")
+                print(f"[INFO] {name} detected, but confidence too low ({conf:.2f})")
 
-        # === RESET ALERT ===
+        # === RESET ALERT AFTER 60 SECONDS ===
         if is_alerting and last_detection_time:
             if (datetime.now() - last_detection_time).seconds > 60:
                 print("[INFO] Resetting alert system.")
@@ -190,7 +193,7 @@ try:
                     sound_thread.join()
                     sound_thread = None
                 stop_thread = False
-                detected_labels.clear()  # Reset detected labels after reset
+                detected_labels.clear()
 
         cv2.imshow("Wild Animal Detection", display)
         if cv2.waitKey(1) & 0xFF == ord("q"):
